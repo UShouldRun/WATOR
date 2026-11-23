@@ -1,4 +1,5 @@
-build/
+lib/wator/build/
+test/wator/twator
+ecosystem
 compile_commands.json
-sim
 *.zip

@@ -51,31 +51,26 @@ This ensures deterministic, non-conflicting movement across the grid.
 
 ## Building
 
-```bash
-# Build the simulator
-make
-
-# Run tests
-make test
-
-# Run with thread sanitizer
-make tsan
+```
+make          # build libwator.a, ecosystem and the tests
+make test     # run the test program
+make tsan     # rebuild with -fsanitize=thread and run the tests
 ```
 
 ## Usage
 
-```bash
-./sim [n_threads] < input_file > output_file
+```
+./ecosystem [n_threads] < input_file > output_file
 ```
 
-- `n_threads`: Number of parallel workers (default: 4)
-- `input_file`: Contains initial ecosystem state
-- `output_file`: Final ecosystem state
+- `n_threads`: number of parallel workers (default: 1 = sequential)
+- `input_file`: the initial ecosystem state
+- `output_file`: the final ecosystem state
 
 ### Example
 
-```bash
-cat examples/input5x5 | ./sim 4 > examples/output5x5
+```
+./ecosystem 4 < examples/input5x5 > examples/output5x5
 ```
 
 ### Input Format
@@ -96,7 +91,9 @@ The simulation divides the world into horizontal zones, each owned by a worker t
 
 - **Zone Assignment**: Each worker owns rows `[row_begin, row_end)` of the grid
 - **Communication**: Workers synchronize boundary rows with neighbors
-- **Load Balancing**: Every `rebalance_every` generations, zones are redistributed based on animal density
+- **Load Balancing**: every `rebalance_every` generations there is
+  a barrier hook to redistribute zones by animal density
+  (counting is in place; the redistribution is a TODO)
 
 The implementation follows a two-phase generation:
 1. **Rabbit sub-step**: All rabbits move and reproduce

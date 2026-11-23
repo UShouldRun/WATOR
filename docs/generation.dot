@@ -1,0 +1,95 @@
+// Data flow of one generation G of the simulation: what each value is
+// computed from. Boxes compute, grey pills are inputs, the two grids are
+// the state between sub-steps. Render: dot -Tsvg generation.dot -o generation.svg
+digraph generation {
+  graph [rankdir = TB, fontname = "Helvetica", nodesep = 0.35, ranksep = 0.42, bgcolor = "white", newrank = true];
+  node  [fontname = "Helvetica", fontsize = 11, shape = box, style = "rounded,filled", fillcolor = "white", color = "#475569", penwidth = 1.3, margin = "0.14,0.07"];
+  edge  [color = "#334155", arrowsize = 0.7, penwidth = 1.1, fontname = "Helvetica"];
+
+  // State
+  grid_g  [label = <<b>World at generation G</b><br/><font point-size="10">each cell: type (empty / rock / rabbit / fox),<br/>proc_age, food_age</font>>, fillcolor = "#e0e7ff", color = "#4338ca", penwidth = 1.8];
+  grid_r  [label = <<b>World after the rabbits</b><br/><font point-size="10">rabbits moved; foxes and rocks untouched</font>>, fillcolor = "#e0e7ff", color = "#4338ca", penwidth = 1.8];
+  grid_n  [label = <<b>World at generation G + 1</b><br/><font point-size="10">input of the next generation</font>>, fillcolor = "#e0e7ff", color = "#4338ca", penwidth = 1.8];
+
+
+  subgraph cluster_rabbits {
+    label = <<b>1. Rabbit sub-step</b>  (every rabbit moves at once)>; labeljust = "l"; fontname = "Helvetica"; fontsize = 12;
+    style = "rounded,filled"; fillcolor = "#f0fdf4"; color = "#16a34a";
+    node [fillcolor = "#dcfce7", color = "#16a34a"];
+
+    gxy1   [label = "G, X, Y", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    p_rab  [label = "GEN_PROC_RABBITS", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    r_free   [label = <<b>Free neighbours</b><br/><font point-size="10">empty cells among N, E, S, W (clockwise)<br/>P = how many</font>>];
+    r_dir    [label = <<b>Direction</b><br/><font point-size="10">free[(G + X + Y) mod P]<br/>P = 0: stays</font>>];
+    r_claim  [label = <<b>Claims per cell</b><br/><font point-size="10">rabbits that chose the same empty cell</font>>];
+    r_win    [label = <<b>Conflict</b><br/><font point-size="10">oldest proc_age survives,<br/>the others die</font>>];
+    r_breed  [label = <<b>Procreation</b><br/><font point-size="10">moved and proc_age ≥ GEN_PROC_RABBITS:<br/>a new rabbit stays in the old cell,<br/>both ages reset to 0</font>>];
+    r_age    [label = <<b>Ageing</b><br/><font point-size="10">otherwise proc_age + 1</font>>];
+  }
+
+  subgraph cluster_foxes {
+    label = <<b>2. Fox sub-step</b>  (sees the rabbits' new positions)>; labeljust = "l"; fontname = "Helvetica"; fontsize = 12;
+    style = "rounded,filled"; fillcolor = "#fff7ed"; color = "#ea580c";
+    node [fillcolor = "#ffedd5", color = "#ea580c"];
+
+    gxy2   [label = "G, X, Y", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    gxy3   [label = "G, X, Y", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    p_food [label = "GEN_FOOD_FOXES", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    p_fox  [label = "GEN_PROC_FOXES", shape = box, style = "rounded,filled,dashed", fillcolor = "#f1f5f9", color = "#94a3b8", fontsize = 10];
+    f_rab    [label = <<b>Rabbit neighbours</b><br/><font point-size="10">rabbits among N, E, S, W</font>>];
+    f_free   [label = <<b>Free neighbours</b><br/><font point-size="10">empty cells among N, E, S, W</font>>];
+    f_hunt   [label = <<b>Hunt</b><br/><font point-size="10">any rabbit: rabbit[(G + X + Y) mod P]</font>>];
+    f_starve [label = <<b>Starvation</b><br/><font point-size="10">no rabbit and<br/>food_age + 1 ≥ GEN_FOOD_FOXES: dies<br/>(before trying to move)</font>>];
+    f_move   [label = <<b>Move</b><br/><font point-size="10">free[(G + X + Y) mod P]<br/>P = 0: stays</font>>];
+    f_claim  [label = <<b>Claims per cell</b><br/><font point-size="10">foxes that chose the same cell</font>>];
+    f_win    [label = <<b>Conflict</b><br/><font point-size="10">oldest proc_age survives;<br/>a tie: the least hungry</font>>];
+    f_eat    [label = <<b>Eating</b><br/><font point-size="10">target held a rabbit: it is eaten,<br/>food_age = 0; else food_age + 1</font>>];
+    f_breed  [label = <<b>Procreation</b><br/><font point-size="10">moved and proc_age ≥ GEN_PROC_FOXES:<br/>a new fox stays in the old cell,<br/>both ages reset to 0</font>>];
+  }
+
+  // Rabbits
+  grid_g  -> r_free   [label = " types", fontsize = 9, fontcolor = "#475569"];
+  r_free  -> r_dir;
+  gxy1    -> r_dir;
+  r_dir   -> r_claim;
+  r_claim -> r_win;
+  grid_g  -> r_win    [label = " proc_age", fontsize = 9, fontcolor = "#475569"];
+  r_dir   -> r_breed  [label = " moved?", fontsize = 9, fontcolor = "#475569"];
+  p_rab   -> r_breed;
+  grid_g  -> r_breed  [label = " proc_age", fontsize = 9, fontcolor = "#475569"];
+  r_dir   -> r_age    [label = " stayed", fontsize = 9, fontcolor = "#475569"];
+  r_win   -> grid_r;
+  r_breed -> grid_r;
+  r_age   -> grid_r;
+  grid_g  -> grid_r   [label = " foxes, rocks", fontsize = 9, fontcolor = "#475569", style = dashed, color = "#94a3b8"];
+
+  // Foxes
+  grid_r   -> f_rab   [label = " types", fontsize = 9, fontcolor = "#475569"];
+  grid_r   -> f_free  [label = " types", fontsize = 9, fontcolor = "#475569"];
+  f_rab    -> f_hunt  [label = " P > 0", fontsize = 9, fontcolor = "#475569"];
+  gxy2     -> f_hunt;
+  f_rab    -> f_starve [label = " P = 0", fontsize = 9, fontcolor = "#475569"];
+  grid_r   -> f_starve [label = " food_age", fontsize = 9, fontcolor = "#475569"];
+  p_food   -> f_starve;
+  f_starve -> f_move  [label = " survives", fontsize = 9, fontcolor = "#475569"];
+  f_free   -> f_move;
+  gxy3     -> f_move;
+  f_hunt   -> f_claim;
+  f_move   -> f_claim;
+  f_claim  -> f_win;
+  grid_r   -> f_win   [label = " proc_age, food_age", fontsize = 9, fontcolor = "#475569"];
+  f_win    -> f_eat;
+  grid_r   -> f_eat   [label = " was a rabbit there?", fontsize = 9, fontcolor = "#475569"];
+  f_hunt   -> f_breed [label = " moved?", fontsize = 9, fontcolor = "#475569"];
+  f_move   -> f_breed [label = " moved?", fontsize = 9, fontcolor = "#475569"];
+  p_fox    -> f_breed;
+  f_eat    -> grid_n;
+  f_breed  -> grid_n;
+  f_starve -> grid_n  [label = " died", fontsize = 9, fontcolor = "#475569"];
+  grid_r   -> grid_n  [label = " uneaten rabbits, rocks", fontsize = 9, fontcolor = "#475569", style = dashed, color = "#94a3b8"];
+
+  { rank = same; r_dir; gxy1; }
+  { rank = same; f_rab; f_free; gxy2; p_food; }
+  { rank = same; f_hunt; f_starve; gxy3; }
+  { rank = same; f_move; p_fox; }
+}
