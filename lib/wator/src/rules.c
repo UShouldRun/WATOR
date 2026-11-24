@@ -154,13 +154,16 @@ static Cell __rules_cell_update(const World *w, const Cell *src, const i32 row,
 // animals_per_row[r] is kept equal to the number of animals in row r of the
 // result (saturating at 255); a row is copied as-is when rows r - 1, r and
 // r + 1 of src (all inside the zone) had no animals.
-static void __rules_substep(Process *p, const i32 gen, const u8 species,
-                            const Cell *src, Cell *dst) {
+static void __rules_substep(
+  Process*    p, 
+  const i32   gen, const u8 species,
+  const Cell* src, Cell*    dst
+) {
   const World *w = p->world;
 
   u8 prev_src = 0, // src count of row r - 1 (animals_per_row[r - 1] already
                    // overwritten)
-      cur_src = 0;
+     cur_src  = 0;
 
   for (i32 row = p->row_begin; row < p->row_end; prev_src = cur_src, row++) {
     u8 next_src = row + 1 < p->row_end ? p->animals_per_row[row + 1] : 0;
@@ -181,22 +184,25 @@ static void __rules_substep(Process *p, const i32 gen, const u8 species,
       Cell out = __rules_cell_update(w, src, row, col, gen, species);
       dst[(i64)row * w->s_cols + col] = out;
 
-      if (out.type == WATOR_RABBIT || out.type == WATOR_FOX)
-        n_animals++;
+      n_animals += out.type == WATOR_RABBIT || out.type == WATOR_FOX;
     }
 
     p->animals_per_row[row] = n_animals > 255 ? 255 : (u8)n_animals;
   }
 }
 
-// ====================# PUBLIC #====================
-
-void __rules_rabbit_substep(Process *p, const i32 gen, const Cell *src,
-                            Cell *dst) {
+void __rules_rabbit_substep(
+  Process *p, 
+  const i32 gen, const Cell *src,
+  Cell *dst
+) {
   __rules_substep(p, gen, WATOR_RABBIT, src, dst);
 }
 
-void __rules_fox_substep(Process *p, const i32 gen, const Cell *src,
-                         Cell *dst) {
+void __rules_fox_substep(
+  Process *p,
+  const i32 gen, const Cell *src,
+  Cell *dst
+) {
   __rules_substep(p, gen, WATOR_FOX, src, dst);
 }

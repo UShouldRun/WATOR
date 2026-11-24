@@ -30,8 +30,6 @@ static void* __process_worker_main(void* arg) {
   return NULL;
 }
 
-// ====================# PUBLIC #====================
-
 // (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
 void __process_assign_zones(Process* procs, const i32 s_rows, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++) {

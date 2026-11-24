@@ -6,7 +6,7 @@
 
 // Usage: ecosystem [n_threads] < input
 // n_threads <= 1 (the default) runs the simulation sequentially.
-int main(int argc, char **argv) {
+i32 main(const i32 argc, const char* argv[]) {
   i32 n_threads = argc > 1 ? atoi(argv[1]) : 1;
   if (n_threads < 1) {
     fprintf(stderr, "usage: %s [n_threads] < input\n", argv[0]);
@@ -35,8 +35,9 @@ int main(int argc, char **argv) {
   }
 
   clock_gettime(CLOCK_MONOTONIC, &t_end);
-  const double elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1e3 +
-                            (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
+  const f64 elapsed_ms = 
+    (t_end.tv_sec - t_start.tv_sec) * 1e3 +
+    (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
   fprintf(stderr, "simulation time: %.3f ms\n", elapsed_ms);
 
   wator_world_print(w, stdout);

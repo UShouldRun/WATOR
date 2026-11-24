@@ -76,7 +76,7 @@ typedef struct process {
   _Atomic i32 progress;
 
   struct process* up,
-                 * down;  // neighbouring workers, NULL when none
+                * down;  // neighbouring workers, NULL when none
 
   // Animals (rabbits + foxes) per row; rows with 0 are skipped.
   // Size = s_rows.

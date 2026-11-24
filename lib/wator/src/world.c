@@ -94,6 +94,7 @@ bool wator_world_load(World* w, FILE* in) {
              &p->s_gen_proc_rabbits, &p->s_gen_proc_foxes, &p->s_gen_food_foxes,
              &p->s_gen, &s_rows, &s_cols, &s_objects) != 7)
     return false;
+
   if (s_rows <= 0 || s_cols <= 0 || s_objects < 0 || p->s_gen < 0)
     return false;
 
@@ -103,8 +104,10 @@ bool wator_world_load(World* w, FILE* in) {
   for (i32 i = 0; i < s_objects; i++) {
     char name[16];
     i32 x, y;
+
     if (fscanf(in, "%15s %d %d", name, &x, &y) != 3)
       goto fail;
+
     if (x < 0 || x >= s_rows || y < 0 || y >= s_cols)
       goto fail;
 
@@ -119,6 +122,7 @@ bool wator_world_load(World* w, FILE* in) {
       goto fail;
     // proc_age and food_age start at 0 (buffers are zeroed).
   }
+
   return true;
 
 fail:
