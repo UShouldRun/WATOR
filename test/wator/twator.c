@@ -171,12 +171,14 @@ static void __test_ref_rabbit_step(const World* w, const i32 gen, const Cell* sr
       i64 d = opts[(gen + r + c) % k];
       if (cur.proc_age >= PR)
         dst[i] = (Cell){ WATOR_RABBIT, 0, 0 };  // baby left behind
-      if ((i32) cur.proc_age > best[d])
-        best[d] = cur.proc_age;
+      // Compete with the age the rabbit will have after moving.
+      i32 age = cur.proc_age >= PR ? 0 : cur.proc_age + 1;
+      if (age > best[d])
+        best[d] = age;
     }
   for (i64 i = 0; i < s_grid; i++)
     if (best[i] >= 0)
-      dst[i] = (Cell){ WATOR_RABBIT, best[i] >= PR ? 0 : best[i] + 1, 0 };
+      dst[i] = (Cell){ WATOR_RABBIT, (u8) best[i], 0 };
   free(best);
 }
 
@@ -245,6 +247,40 @@ static void test_rabbit_zones_match_reference(void) {
   }
 }
 
+// Regression: when two rabbits move to the same cell, the winner is the one
+// with the older age *after* the move. A rabbit that is procreating resets to
+// 0, so it loses to a younger rabbit that is not procreating.
+static void test_rabbit_conflict_post_move_age(void) {
+  printf("simulation: procreating rabbit competes with its post-move age\n");
+
+  // 2x3 world:
+  //   A . B        A = rabbit age 1 (procreating), B = rabbit age 0.
+  //   * . *        Rocks block every other neighbour, so both A and B can
+  //                only move to the centre cell (0, 1).
+  World* w = wator_world_create();
+  assert(w);
+  assert(__test_load_str(w,
+      "1 1 1 1 2 3 4\n"
+      "RABBIT 0 0\n"
+      "RABBIT 0 2\n"
+      "ROCK 1 0\n"
+      "ROCK 1 2\n"));
+
+  __wator_cell_at(w->buf[0], w->s_cols, 0, 0)->proc_age = 1;
+
+  assert(wator_world_run(w, 1));
+
+  // B (0 -> 1) wins the centre; A resets to 0 and leaves a baby at (0, 0).
+  Cell centre = *__wator_cell_at(w->buf[0], w->s_cols, 0, 1);
+  Cell baby   = *__wator_cell_at(w->buf[0], w->s_cols, 0, 0);
+  Cell east   = *__wator_cell_at(w->buf[0], w->s_cols, 0, 2);
+  assert(centre.type == WATOR_RABBIT && centre.proc_age == 1);
+  assert(baby.type == WATOR_RABBIT && baby.proc_age == 0);
+  assert(east.type == WATOR_EMPTY);
+
+  assert(wator_world_destroy(w));
+}
+
 // ====================# MAIN #====================
 
 int main(void) {
@@ -252,6 +288,7 @@ int main(void) {
   test_world_invalid();
   test_simulation_sequential();
   test_simulation_parallel();
+  test_rabbit_conflict_post_move_age();
   test_rabbit_zones_match_reference();
 
   puts("wator tests passed");
