@@ -51,6 +51,8 @@ bool wator_world_run(World* w, const i32 s_threads) {
  *        then the final state, N the object count, listed row-major.
  */
 void wator_world_print(const World* w, FILE* out) {
+  // Reads buf[0] while the pull kernel is the running path; flips to
+  // the block-major grid when the bucket kernel lands.
   const Cell* g = w->buf[0];
   const i64 s_grid = (i64) w->s_rows * w->s_cols;
 
@@ -111,16 +113,26 @@ bool wator_world_load(World* w, FILE* in) {
     if (x < 0 || x >= s_rows || y < 0 || y >= s_cols)
       goto fail;
 
-    Cell* c = __wator_cell_at(w->buf[0], s_cols, x, y);
-    if (c->type != WATOR_EMPTY)
+    Cell* cell = __wator_cell_at(w->buf[0], s_cols, x, y);
+    if (cell->type != WATOR_EMPTY)
       goto fail;  // two objects on the same cell
 
-    if      (strcmp(name, "ROCK")   == 0) c->type = WATOR_ROCK;
-    else if (strcmp(name, "RABBIT") == 0) c->type = WATOR_RABBIT;
-    else if (strcmp(name, "FOX")    == 0) c->type = WATOR_FOX;
+    u8 type;
+    if      (strcmp(name, "ROCK")   == 0) type = WATOR_ROCK;
+    else if (strcmp(name, "RABBIT") == 0) type = WATOR_RABBIT;
+    else if (strcmp(name, "FOX")    == 0) type = WATOR_FOX;
     else
       goto fail;
+
+    cell->type = type;
     // proc_age and food_age start at 0 (buffers are zeroed).
+
+    u8* g = __wator_grid_at(&w->grid, __wator_s_blocks_row(w), x, y);
+    if (*g != WATOR_EMPTY)
+      goto fail;  // two objects on the same cell
+
+    *g = type;
+    // Ages start at 0 (arrays are zeroed).
   }
 
   return true;
@@ -132,19 +144,45 @@ fail:
 
 // ====================# PRIVATE #====================
 
-// Allocates both double-buffer grids (zeroed) for an s_rows x s_cols world.
+// Allocates the grids and ages for an s_rows x s_cols world (grid and
+// claims block-major, zeroed; ages zeroed; pull-kernel bufs too).
 bool __world_alloc_bufs(World* w, const i32 s_rows, const i32 s_cols) {
   const i64 s_grid = (i64) s_rows * s_cols;
+  const i32 s_blocks_row = (s_cols + 3) / 4;
+  const i32 s_blocks_col = (s_rows + 3) / 4;
+  const u32 s_blocks = (u32) ((i64) s_blocks_col * s_blocks_row);
+
   w->s_rows = s_rows;
   w->s_cols = s_cols;
+
+  w->grid.s_grid = s_blocks;
+  w->claims.s_grid = s_blocks;
+
+  w->grid.grid = calloc(s_grid ? s_grid : 1, sizeof(u8));
+  w->claims.claims = calloc((s_grid + 1) / 2 ? (s_grid + 1) / 2 : 1, sizeof(u8));
+
+  w->proc_age = calloc(s_grid ? s_grid : 1, sizeof(u16));
+  w->food_age = calloc(s_grid ? s_grid : 1, sizeof(u16));
+
+  // The pull kernel still runs on its row-major Cell layout.
   w->buf[0] = calloc(s_grid ? s_grid : 1, sizeof(Cell));
   w->buf[1] = calloc(s_grid ? s_grid : 1, sizeof(Cell));
 
-  return w->buf[0] != NULL && w->buf[1] != NULL;
+  return w->grid.grid != NULL && w->claims.claims != NULL
+      && w->proc_age != NULL && w->food_age != NULL
+      && w->buf[0] != NULL && w->buf[1] != NULL;
 }
 
 void __world_free_bufs(World* w) {
   free(w->buf[0]);
   free(w->buf[1]);
   w->buf[0] = w->buf[1] = NULL;
+
+  free(w->proc_age);
+  free(w->food_age);
+  w->proc_age = w->food_age = NULL;
+
+  free(w->grid.grid);
+  free(w->claims.claims);
+  w->grid.grid = w->claims.claims = NULL;
 }
