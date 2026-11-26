@@ -8,10 +8,10 @@
  * leaves (2^depth x 2^depth), padded leaves stay 0.
  *
  * * QuadTree:
- * - What: an index of the non-empty blocks of a grid, so a walk visits
- *   occupied blocks and skips empty subtrees without touching them.
+ * - What: an index of the non-empty blocks of a grid: per-block leaf words
+ *   with the counts of every subtree above them.
  * - Words: an internal node holds a count, the sum of the counts below it;
- *   a node with 0 has nothing below it and the descent skips it. A leaf
+ *   a node with 0 has nothing below it. A leaf
  *   holds a caller-defined word, used in one of two ways:
  *     count tree: the leaf is a count too (Wa-Tor's claims tree: claimed
  *                 cells per block). Update with quadtree_add.
@@ -21,42 +21,45 @@
  *                 quadtree_leaf_set and the counts with quadtree_path_add.
  * - When: created once per grid, cleared (count trees) or kept up to date
  *   (mask trees) between sub-steps, destroyed with the grid.
- * - Time Complexity: O(depth) per update; a walk is O(A * depth) for A
- *   visited leaves; clear is O(s_nodes).
+ * - Time Complexity: O(1) per leaf read or store, O(depth) per add;
+ *   clear is O(s_nodes).
  * - Concurrency: quadtree_add and quadtree_path_add are atomic (relaxed
  *   fetch_add) and may run from several workers at once. quadtree_leaf_set
- *   is a plain store: only the worker owning the block may call it. Walks
- *   may run concurrently with each other, not with writers.
+ *   is a plain store: only the worker owning the block may call it.
  *
- * QuadTree is opaque to the caller; all access goes through this API.
+ * The struct is public so a caller can hold a QuadTree in place (by value,
+ * e.g. inside Wator) instead of behind a pointer; its fields are read-only
+ * to the caller, and all updates go through this API.
  */
 #ifndef __QUADTREE_H__
 #define __QUADTREE_H__
 
 #include "utils.h"
 
-typedef struct quadtree      QuadTree;
-typedef struct quadtree_iter QuadTreeIter;
+typedef struct quadtree QuadTree;
 
 // Deepest tree supported: 2^16 x 2^16 leaves (a 262144 x 262144 grid).
 #define QUADTREE_MAX_DEPTH 16
 
+/* ====================# DATA LAYOUT #==================== */
+
 /*
-  Walk state: an explicit stack of the descent, so a walk needs no
-  allocation and no callback. Fields are private; set up with
-  quadtree_iter_init, advance with quadtree_iter_next.
+  Flat complete quad tree, root first, level by level: level l holds 4^l
+  nodes starting at index (4^l - 1) / 3. The children of node i are
+  4i + 1 .. 4i + 4, its parent (i - 1) / 4. The leaves are level `depth`,
+  2^depth x 2^depth of them, in Z (Morton) order: the four children of a
+  node are four consecutive leaves, and leaf (br, bc) is at
+    leaf_base + morton(br, bc),  leaf_base = (4^depth - 1) / 3
+  s_nodes = (4^(depth + 1) - 1) / 3 words in all.
 */
-struct quadtree_iter {
-  const QuadTree* tree;
-
+struct quadtree {
   u32
-    br_begin,  // block-row range of the walk: [br_begin, br_end)
-    br_end,
-    depth;     // current stack depth
+    s_block_rows,  // leaves in use: block rows of the grid
+    s_block_cols,  // leaves in use: block columns of the grid
+    depth,         // leaf level; 2^depth >= max(s_block_rows, s_block_cols)
+    s_nodes;       // node count, root included
 
-  u32
-    node [QUADTREE_MAX_DEPTH + 1],  // node index at each level
-    child[QUADTREE_MAX_DEPTH + 1];  // next child (0..4) to visit at each level
+  u32* nodes;      // leaf: caller word; internal: count of its subtree
 };
 
 /* ====================# QUADTREE #==================== */
@@ -90,22 +93,5 @@ void      quadtree_leaf_set    (QuadTree* tree, const u32 br, const u32 bc, cons
 u32       quadtree_add         (QuadTree* tree, const u32 br, const u32 bc, const i32 delta);
 // Mask tree: adds delta to every ancestor of (br, bc), not the leaf; atomic.
 void      quadtree_path_add    (QuadTree* tree, const u32 br, const u32 bc, const i32 delta);
-
-/* ====================# ITER #==================== */
-
-/*
-  Starts a walk over the leaves in block-rows [br_begin, br_end): a worker
-  passes its zone. Subtrees with count 0, and subtrees outside the range,
-  are skipped without being visited.
-*/
-void      quadtree_iter_init   (QuadTreeIter* it, const QuadTree* tree, const u32 br_begin, const u32 br_end);
-
-/*
-  Next non-zero leaf of the walk, in Z order: writes its block (br, bc) and
-  its word, returns false when the walk is over. A mask tree may yield a
-  leaf whose word is non-zero but holds nothing the caller wants (rocks
-  only, under an ancestor counting animals); the caller filters.
-*/
-bool      quadtree_iter_next   (QuadTreeIter* it, u32* br, u32* bc, u32* word);
 
 #endif // !__QUADTREE_H__

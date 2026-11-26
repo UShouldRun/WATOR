@@ -32,8 +32,8 @@
 /* ====================# PRIVATE #==================== */
 
 // Clockwise from north: N, E, S, W.
-static const i32 drow[4] = {-1, 0, 1, 0};
-static const i32 dcol[4] = {0, 1, 0, -1};
+static const i32 drow[4] = { -1, 0, 1, 0 };
+static const i32 dcol[4] = { 0, 1, 0, -1 };
 
 enum {
   DIR_STAY = -1,

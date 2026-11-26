@@ -72,28 +72,3 @@ void quadtree_path_add(QuadTree* tree, const u32 br, const u32 bc, const i32 del
   (void) bc;
   (void) delta;
 }
-
-/* ====================# ITER #==================== */
-
-void quadtree_iter_init(QuadTreeIter* it, const QuadTree* tree, const u32 br_begin, const u32 br_end) {
-  // TODO(quadtree): store tree and range; push the root (node 0, child 0).
-  (void) it;
-  (void) tree;
-  (void) br_begin;
-  (void) br_end;
-}
-
-bool quadtree_iter_next(QuadTreeIter* it, u32* br, u32* bc, u32* word) {
-  /*
-    TODO(quadtree): iterative DFS on it->node / it->child. Skip a child
-    whose word is 0 or whose block-row span [row0, row0 + 2^(depth - l))
-    misses [br_begin, br_end); at the leaf level skip padded leaves
-    (br >= s_block_rows or bc >= s_block_cols) and yield (br, bc, word)
-    from the Morton code. Return false when the stack empties.
-  */
-  (void) it;
-  (void) br;
-  (void) bc;
-  (void) word;
-  return false;
-}
