@@ -46,7 +46,8 @@ sharks and fish with foxes and rabbits.
 - Static obstacles that no animal can occupy
 
 ### Movement Selection
-Animals choose direction using: `(generation + row + col) mod 4`  
+Animals number their admissible neighbours `0 .. P-1` clockwise from north
+and pick index `(generation + row + col) mod P`.
 This ensures deterministic, non-conflicting movement across the grid.
 
 ## Building

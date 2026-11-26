@@ -1,3 +1,7 @@
+// TODO(refactor): port to the new interface: Process -> WatorProcess,
+// World -> Wator, w->p -> params, buf/Cell -> world[2]/WatorWorld; drop
+// animals_per_row; run the two-pass sub-step; block-row-aligned zones.
+
 #include "wator_private.h"
 
 #include <stdlib.h>
@@ -5,33 +9,48 @@
 // ====================# PRIVATE #====================
 
 // Thread body: runs every sub-step of the simulation.
-static void* __process_worker_main(void* arg) {
+static void* __wator_process_worker_main(void* arg) {
   Process* p = arg;
   World* w = p->world;
   i32 s_total = 2 * w->p.s_gen;
 
   // Sub-step s: even = rabbits (A -> B), odd = foxes (B -> A).
   for (i32 s = 0; s < s_total; s++) {
-    __sync_wait(p, s);
+    __wator_process_sync_wait(p, s);
 
+    // TODO(refactor): src/dst are &w->world[s & 1] / &w->world[(s + 1) & 1]
+    // (WatorWorld*), and the sub-step becomes the two passes: pass 1,
+    // publish the pass-1 progress, wait the neighbours' pass 1, pass 2,
+    // publish the sub-step (see report, "Synchronisation"). Clear the claims
+    // and the claims tree before pass 1.
     Cell* src = w->buf[s & 1];
     Cell* dst = w->buf[(s + 1) & 1];
 
     if ((s & 1) == 0)
-      __rules_rabbit_substep(p, s >> 1, src, dst);
+      __wator_process_rabbit_substep(p, s >> 1, src, dst);
     else
-      __rules_fox_substep(p, s >> 1, src, dst);
+      __wator_process_fox_substep(p, s >> 1, src, dst);
 
-    __sync_publish(p, s + 1);
+    __wator_process_sync_publish(p, s + 1);
 
-    // TODO: every s_rebalance_every generations -> barrier + __balance_rebalance
+    // TODO: every s_rebalance_every generations -> barrier + __wator_process_rebalance
   }
 
   return NULL;
 }
 
 // (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
-void __process_assign_zones(Process* procs, const i32 s_rows, const i32 s_threads) {
+//
+// TODO: align strip boundaries to block-rows (multiples of 4 rows).
+// The grid is block-major: a boundary in the middle of a 4x4 block puts two
+// workers on the same 16-byte block (false sharing on grid and claims) and
+// on the same quad-tree leaf (its counts would then need atomics).
+// With aligned strips the worker cap is ceil(s_rows / 4) instead of
+// s_rows / 2 (see wator_run); 200x200 still allows 50 workers.
+// s_rows is the shorter side (inputs with rows > cols are stored
+// transposed), so the cap is set by min(R, C), as it already was for
+// wide inputs before the transposition.
+void __wator_process_assign_zones(Process* procs, const i32 s_rows, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++) {
     procs[i].row_begin = (i32) ((i64) s_rows * i / s_threads);
     procs[i].row_end   = (i32) ((i64) s_rows * (i + 1) / s_threads);
@@ -40,7 +59,11 @@ void __process_assign_zones(Process* procs, const i32 s_rows, const i32 s_thread
 
 // Sets up s_threads workers over w: links neighbours, allocates
 // animals_per_row and fills it from the loaded grid.
-bool __process_init_all(Process* procs, World* w, const i32 s_threads) {
+// TODO(refactor): procs[i].world -> procs[i].wator; drop animals_per_row
+// (alloc, free and the initial count below): the occupancy tree replaces
+// it and is built once from world[0].grid after load (or in alloc/load).
+// The cell read must use __wator_world_grid_get, not __wator_cell_at / buf[0].
+bool __wator_process_init_all(Process* procs, World* w, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++) {
     procs[i].id    = i;
     procs[i].world = w;
@@ -57,7 +80,7 @@ bool __process_init_all(Process* procs, World* w, const i32 s_threads) {
 
     atomic_init(&procs[i].progress, 0);
   }
-  __process_assign_zones(procs, w->s_rows, s_threads);
+  __wator_process_assign_zones(procs, w->s_rows, s_threads);
 
   // Initial animals-per-row of each zone, from the loaded grid.
   for (i32 i = 0; i < s_threads; i++)
@@ -77,19 +100,21 @@ bool __process_init_all(Process* procs, World* w, const i32 s_threads) {
   return true;
 }
 
-void __process_destroy_all(Process* procs, const i32 s_threads) {
+// TODO(refactor): nothing left to free per worker once animals_per_row is
+// gone; keep the hook if the quad trees end up per worker.
+void __wator_process_destroy_all(Process* procs, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++)
     free(procs[i].animals_per_row);
 }
 
 // Runs the whole simulation: sequentially on the calling thread when
 // s_threads <= 1, otherwise on s_threads pthreads.
-bool __process_run(World* w, const i32 s_threads) {
+bool __wator_process_run(World* w, const i32 s_threads) {
   Process* procs = (Process*)calloc(s_threads, sizeof(Process));
   if (procs == NULL)
     return false;
 
-  if (!__process_init_all(procs, w, s_threads)) {
+  if (!__wator_process_init_all(procs, w, s_threads)) {
     free(procs);
     return false;
   }
@@ -98,13 +123,13 @@ bool __process_run(World* w, const i32 s_threads) {
   i32 n_created = 0;
   if (s_threads == 1) {
     // No neighbours: run the whole simulation on the calling thread.
-    __process_worker_main(&procs[0]);
+    __wator_process_worker_main(&procs[0]);
 
   } else {
     for (i32 i = 0; i < s_threads; i++) {
       i32 err = pthread_create(
         &procs[i].thread, NULL,
-        __process_worker_main, &procs[i]
+        __wator_process_worker_main, &procs[i]
       );
 
       if (err != 0) {
@@ -124,7 +149,7 @@ bool __process_run(World* w, const i32 s_threads) {
         pthread_join(procs[i].thread, NULL);
   }
 
-  __process_destroy_all(procs, s_threads);
+  __wator_process_destroy_all(procs, s_threads);
   free(procs);
 
   return ok;

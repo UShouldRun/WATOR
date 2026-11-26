@@ -1,4 +1,25 @@
+// TODO(refactor): replace the pull kernel with the bucket kernel (two passes
+// over the quad trees and the claims); details below the include.
+
 #include "wator_private.h"
+
+// TODO(refactor): this file is still the pull kernel on the row-major Cell
+// layout, which no longer exists (Cell, CELL_EMPTY, World, w->p, buf).
+// Replace it with the bucket kernel of the report:
+//  - pass 1 (choose): walk the occupancy tree over the zone, compute each
+//    animal's direction from src (grid via __wator_world_grid_get, ages from
+//    src->proc_age / food_age at the same index), fetch_or the claim nibble
+//    in wator->claims, fetch_add the claims tree on the cell's first claim.
+//  - pass 2 (solve): walk the claims tree, resolve each claimed cell
+//    (oldest-after-the-move, ties to the least hungry fox), write dst grid
+//    and ages, apply departures / procreation, update the occupancy tree.
+//  - cells that nothing touched must still be carried to dst (rocks, the
+//    other species, animals that stay): copy src -> dst for the zone, or
+//    write every stayer explicitly in pass 1/2.
+//  - transposition: when wator->transposed, number neighbours in input
+//    clockwise order = stored W, S, E, N (drow/dcol below are N, E, S, W).
+//  - ages are u16 now: __rules_age_inc saturates at 255 (u8), widen it.
+// Keep the pull kernel's logic available to the tests as the oracle.
 
 #include <string.h>
 
@@ -191,7 +212,7 @@ static void __rules_substep(
   }
 }
 
-void __rules_rabbit_substep(
+void __wator_process_rabbit_substep(
   Process *p, 
   const i32 gen, const Cell *src,
   Cell *dst
@@ -199,7 +220,7 @@ void __rules_rabbit_substep(
   __rules_substep(p, gen, WATOR_RABBIT, src, dst);
 }
 
-void __rules_fox_substep(
+void __wator_process_fox_substep(
   Process *p,
   const i32 gen, const Cell *src,
   Cell *dst

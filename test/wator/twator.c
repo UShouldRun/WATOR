@@ -1,8 +1,23 @@
+// TODO(refactor): port the tests to Wator / block-major grid; details below
+// the includes.
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+// TODO(refactor): the tests still use the old layout and must be ported:
+//  - World -> Wator, w->p -> params, __world_alloc_bufs -> __wator_alloc.
+//  - cell reads __wator_cell_at(w->buf[0], ...)->type become
+//    __wator_world_grid_get(w->world[0].grid, __wator_world_cell_index(...)), and
+//    ages world[0].proc_age / food_age at the same block-major index.
+//  - the random-world oracle test compares memcmp on Cell buffers and checks
+//    animals_per_row: keep the pull kernel's reference step (row-major Cell
+//    is fine inside the test), convert to/from the block-major world for the
+//    comparison, and check the occupancy tree instead of animals_per_row.
+//  - __rules_*_substep now take WatorWorld* src / dst.
+//  - add cases: rows > cols input (transposed load/print round-trip and the
+//    same result as the untransposed run), and R, C not multiples of 4.
 #include "wator_private.h"
 
 // ====================# WORLD #====================
@@ -45,7 +60,7 @@ static bool __test_load_str(World* w, const char* s) {
   FILE* f = fmemopen((void*) s, strlen(s), "r");
   assert(f);
 
-  bool ok = wator_world_load(w, f);
+  bool ok = wator_load(w, f);
   fclose(f);
 
   return ok;
@@ -57,7 +72,7 @@ static char* __test_print_to_str(const World* w) {
   FILE* out = open_memstream(&buf, &len);
   assert(out);
 
-  wator_world_print(w, out);
+  wator_print(w, out);
   fclose(out);
 
   return buf;
@@ -68,7 +83,7 @@ static char* __test_print_to_str(const World* w) {
 static void test_world_roundtrip(void) {
   printf("world: round-trip load + print\n");
 
-  World* w = wator_world_create();
+  World* w = wator_create();
   assert(w);
   assert(__test_load_str(w, EXAMPLE));
   assert(w->s_rows == 5 && w->s_cols == 5);
@@ -82,13 +97,13 @@ static void test_world_roundtrip(void) {
   assert(strcmp(out, EXPECTED) == 0);
   free(out);
 
-  assert(wator_world_destroy(w));
+  assert(wator_destroy(w));
 }
 
 static void test_world_invalid(void) {
   printf("world: reject malformed input\n");
 
-  World* w = wator_world_create();
+  World* w = wator_create();
   assert(w);
   assert(!__test_load_str(w, ""));
   assert(!__test_load_str(w, "1 1 1 1 2 2 1\nROCK 5 0\n"));         // out of bounds
@@ -96,37 +111,37 @@ static void test_world_invalid(void) {
   assert(!__test_load_str(w, "1 1 1 1 2 2 2\nROCK 0 0\nFOX 0 0\n"));  // same cell
   assert(!__test_load_str(w, "1 1 1 1 2 2 3\nROCK 0 0\n"));         // truncated
 
-  assert(wator_world_destroy(w));
+  assert(wator_destroy(w));
 }
 
 static void test_simulation_sequential(void) {
   printf("simulation: sequential run matches the course example\n");
 
-  World* w = wator_world_create();
+  World* w = wator_create();
   assert(w);
   assert(__test_load_str(w, EXAMPLE));
-  assert(wator_world_run(w, 1));
+  assert(wator_run(w, 1));
 
   char* out = __test_print_to_str(w);
   assert(strcmp(out, FINAL_5X5) == 0);
   free(out);
 
-  assert(wator_world_destroy(w));
+  assert(wator_destroy(w));
 }
 
 static void test_simulation_parallel(void) {
   printf("simulation: parallel run matches the course example\n");
 
-  World* w = wator_world_create();
+  World* w = wator_create();
   assert(w);
   assert(__test_load_str(w, EXAMPLE));
-  assert(wator_world_run(w, 2));
+  assert(wator_run(w, 2));
 
   char* out = __test_print_to_str(w);
   assert(strcmp(out, FINAL_5X5) == 0);
   free(out);
 
-  assert(wator_world_destroy(w));
+  assert(wator_destroy(w));
 }
 
 // Independent "push" reference: every rabbit picks its destination from
@@ -210,7 +225,7 @@ static void test_rabbit_zones_match_reference(void) {
 
   srand(12345);
   for (i32 iter = 0; iter < 3000; iter++) {
-    World* w = wator_world_create();
+    World* w = wator_create();
     assert(w);
     i32 s_rows = 1 + rand() % 14, s_cols = 1 + rand() % 12;
     assert(__world_alloc_bufs(w, s_rows, s_cols));
@@ -219,14 +234,14 @@ static void test_rabbit_zones_match_reference(void) {
 
     i32 s_threads = 1 + rand() % (s_rows / 2 > 0 ? s_rows / 2 : 1);  // zones have >= 2 rows
     Process procs[16] = {0};
-    assert(__process_init_all(procs, w, s_threads));
+    assert(__wator_process_init_all(procs, w, s_threads));
 
     Cell* ref = malloc((i64) s_rows * s_cols * sizeof(Cell));
     assert(ref);
     for (i32 gen = 0; gen < 6; gen++) {
       __test_ref_rabbit_step(w, gen, w->buf[0], ref);
       for (i32 t = 0; t < s_threads; t++)
-        __rules_rabbit_substep(&procs[t], gen, w->buf[0], w->buf[1]);
+        __wator_process_rabbit_substep(&procs[t], gen, w->buf[0], w->buf[1]);
       assert(memcmp(ref, w->buf[1], (i64) s_rows * s_cols * sizeof(Cell)) == 0);
 
       // animals_per_row must describe the new grid
@@ -242,8 +257,8 @@ static void test_rabbit_zones_match_reference(void) {
       memcpy(w->buf[0], w->buf[1], (i64) s_rows * s_cols * sizeof(Cell));
     }
     free(ref);
-    __process_destroy_all(procs, s_threads);
-    assert(wator_world_destroy(w));
+    __wator_process_destroy_all(procs, s_threads);
+    assert(wator_destroy(w));
   }
 }
 
@@ -257,7 +272,7 @@ static void test_rabbit_conflict_post_move_age(void) {
   //   A . B        A = rabbit age 1 (procreating), B = rabbit age 0.
   //   * . *        Rocks block every other neighbour, so both A and B can
   //                only move to the centre cell (0, 1).
-  World* w = wator_world_create();
+  World* w = wator_create();
   assert(w);
   assert(__test_load_str(w,
       "1 1 1 1 2 3 4\n"
@@ -268,7 +283,7 @@ static void test_rabbit_conflict_post_move_age(void) {
 
   __wator_cell_at(w->buf[0], w->s_cols, 0, 0)->proc_age = 1;
 
-  assert(wator_world_run(w, 1));
+  assert(wator_run(w, 1));
 
   // B (0 -> 1) wins the centre; A resets to 0 and leaves a baby at (0, 0).
   Cell centre = *__wator_cell_at(w->buf[0], w->s_cols, 0, 1);
@@ -278,7 +293,7 @@ static void test_rabbit_conflict_post_move_age(void) {
   assert(baby.type == WATOR_RABBIT && baby.proc_age == 0);
   assert(east.type == WATOR_EMPTY);
 
-  assert(wator_world_destroy(w));
+  assert(wator_destroy(w));
 }
 
 // ====================# MAIN #====================

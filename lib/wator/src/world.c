@@ -9,87 +9,97 @@
  * @brief Creates a world without buffers: s_rows = s_cols = 0, zeroed params.
  * @return a new world, or NULL on allocation failure.
  */
-World* wator_world_create(void) {
-  World* w = calloc(1, sizeof(struct world));
-  if (w == NULL)
-    return NULL;
-
-  return w;
+Wator* wator_create(void) {
+  return (Wator*)calloc(1, sizeof(struct wator));
 }
 
 /**
  * @brief Frees the buffers (if any) and the world.
- * @return false if w was NULL.
+ * @return false if wator was NULL.
  */
-bool wator_world_destroy(World* w) {
-  if (w == NULL)
+bool wator_destroy(Wator* wator) {
+  if (wator == NULL)
     return false;
 
-  __world_free_bufs(w);
-  free(w);
+  __wator_free(wator);
+  free(wator);
 
   return true;
 }
 
 /**
- * @brief Runs p.s_gen generations: sequentially when s_threads <= 1,
+ * @brief Runs params.s_gen generations: sequentially when s_threads <= 1,
  *        otherwise on s_threads pthreads (clamped so that every zone keeps
  *        at least two rows, since the rules read two rows into neighbouring
  *        zones and sync only covers immediate neighbours).
  * @return false on allocation or thread-creation failure.
  */
-bool wator_world_run(World* w, const i32 s_threads) {
+bool wator_run(Wator* wator, const i32 s_threads) {
   i32 T = s_threads;
-  if (T > w->s_rows / 2)
-    T = w->s_rows / 2;
+  if (T > wator->s_rows / 2)
+    T = wator->s_rows / 2;
 
-  return __process_run(w, T);
+  return __wator_process_run(wator, T);
 }
 
 /**
- * @brief Prints buf[0] in the input format: params, s_gen printed as 0,
- *        then the final state, N the object count, listed row-major.
+ * @brief Prints world[0] in the input format: params, s_gen printed as 0,
+ *        then the final state, N the object count, listed row-major in
+ *        input coordinates (the transposition is undone here).
+ *
+ * A run is 2 * s_gen sub-steps, an even count, so the final state is
+ * always in world[0].
  */
-void wator_world_print(const World* w, FILE* out) {
-  // Reads buf[0] while the pull kernel is the running path; flips to
-  // the block-major grid when the bucket kernel lands.
-  const Cell* g = w->buf[0];
-  const i64 s_grid = (i64) w->s_rows * w->s_cols;
+void wator_print(const Wator* wator, FILE* out) {
+  const WatorParams* p = &wator->params;
+  const u8* grid = wator->world[0].grid;
+  const i32 s_blocks_row = __wator_s_blocks_row(wator);
+
+  // Input dimensions.
+  const i32
+    s_rows = wator->transposed ? wator->s_cols : wator->s_rows,
+    s_cols = wator->transposed ? wator->s_rows : wator->s_cols;
 
   i64 n_objects = 0;
-  for (i64 i = 0; i < s_grid; i++)
-    if (g[i].type != WATOR_EMPTY)
-      n_objects++;
+  for (i32 r = 0; r < wator->s_rows; r++)
+    for (i32 c = 0; c < wator->s_cols; c++)
+      if (__wator_world_grid_get(grid, __wator_world_cell_index(s_blocks_row, r, c)) != WATOR_EMPTY)
+        n_objects++;
 
   fprintf(out, "%d %d %d 0 %d %d %lld\n",
-          w->p.s_gen_proc_rabbits, w->p.s_gen_proc_foxes, w->p.s_gen_food_foxes,
-          w->s_rows, w->s_cols, (long long) n_objects);
+          p->s_gen_proc_rabbits, p->s_gen_proc_foxes, p->s_gen_food_foxes,
+          s_rows, s_cols, (long long) n_objects);
 
   static const char* const names[] = {
     [WATOR_ROCK]   = "ROCK",
     [WATOR_RABBIT] = "RABBIT",
     [WATOR_FOX]    = "FOX",
   };
-  for (i32 r = 0; r < w->s_rows; r++)
-    for (i32 c = 0; c < w->s_cols; c++) {
-      u8 t = g[(i64) r * w->s_cols + c].type;
+
+  for (i32 x = 0; x < s_rows; x++)
+    for (i32 y = 0; y < s_cols; y++) {
+      const u8 t = __wator_world_grid_get(grid, wator->transposed
+        ? __wator_world_cell_index(s_blocks_row, y, x)
+        : __wator_world_cell_index(s_blocks_row, x, y));
+
       if (t != WATOR_EMPTY)
-        fprintf(out, "%s %d %d\n", names[t], r, c);
+        fprintf(out, "%s %d %d\n", names[t], x, y);
     }
 }
 
 /**
- * @brief Parses parameters + initial entities from in into buf[0].
+ * @brief Parses parameters + initial entities from in into world[0].
  *
  * First line: S_GEN_PROC_RABBITS S_GEN_PROC_FOXES S_GEN_FOOD_FOXES
  * S_GEN S_ROWS S_COLS S_OBJECTS, then one OBJECT X Y line per object,
- * OBJECT in {ROCK, RABBIT, FOX}.
+ * OBJECT in {ROCK, RABBIT, FOX}. When S_ROWS > S_COLS the grid is stored
+ * transposed: (X, Y) goes to stored (Y, X).
  *
  * @return false on malformed input or allocation failure, freeing the
  *         buffers in that case.
  */
-bool wator_world_load(World* w, FILE* in) {
-  Params* p = &w->p;
+bool wator_load(Wator* wator, FILE* in) {
+  WatorParams* p = &wator->params;
   i32 s_rows, s_cols, s_objects;
 
   if (fscanf(in, "%d %d %d %d %d %d %d",
@@ -100,8 +110,15 @@ bool wator_world_load(World* w, FILE* in) {
   if (s_rows <= 0 || s_cols <= 0 || s_objects < 0 || p->s_gen < 0)
     return false;
 
-  if (!__world_alloc_bufs(w, s_rows, s_cols))
+  wator->transposed = s_rows > s_cols;
+
+  if (wator->transposed
+        ? !__wator_alloc(wator, s_cols, s_rows)
+        : !__wator_alloc(wator, s_rows, s_cols))
     return false;
+
+  u8* const grid = wator->world[0].grid;
+  const i32 s_blocks_row = __wator_s_blocks_row(wator);
 
   for (i32 i = 0; i < s_objects; i++) {
     char name[16];
@@ -113,10 +130,6 @@ bool wator_world_load(World* w, FILE* in) {
     if (x < 0 || x >= s_rows || y < 0 || y >= s_cols)
       goto fail;
 
-    Cell* cell = __wator_cell_at(w->buf[0], s_cols, x, y);
-    if (cell->type != WATOR_EMPTY)
-      goto fail;  // two objects on the same cell
-
     u8 type;
     if      (strcmp(name, "ROCK")   == 0) type = WATOR_ROCK;
     else if (strcmp(name, "RABBIT") == 0) type = WATOR_RABBIT;
@@ -124,65 +137,76 @@ bool wator_world_load(World* w, FILE* in) {
     else
       goto fail;
 
-    cell->type = type;
-    // proc_age and food_age start at 0 (buffers are zeroed).
+    const i64 i_cell = wator->transposed
+      ? __wator_world_cell_index(s_blocks_row, y, x)
+      : __wator_world_cell_index(s_blocks_row, x, y);
 
-    u8* g = __wator_grid_at(&w->grid, __wator_s_blocks_row(w), x, y);
-    if (*g != WATOR_EMPTY)
+    if (__wator_world_grid_get(grid, i_cell) != WATOR_EMPTY)
       goto fail;  // two objects on the same cell
 
-    *g = type;
+    __wator_world_grid_set(grid, i_cell, type);
     // Ages start at 0 (arrays are zeroed).
   }
 
   return true;
 
 fail:
-  __world_free_bufs(w);
+  __wator_free(wator);
   return false;
 }
 
 // ====================# PRIVATE #====================
 
-// Allocates the grids and ages for an s_rows x s_cols world (grid and
-// claims block-major, zeroed; ages zeroed; pull-kernel bufs too).
-bool __world_alloc_bufs(World* w, const i32 s_rows, const i32 s_cols) {
-  const i64 s_grid = (i64) s_rows * s_cols;
-  const i32 s_blocks_row = (s_cols + 3) / 4;
-  const i32 s_blocks_col = (s_rows + 3) / 4;
-  const u32 s_blocks = (u32) ((i64) s_blocks_col * s_blocks_row);
+// Allocates both worlds and the claims for an s_rows x s_cols world in one
+// zeroed block (wator->mem), all block-major with padded edge blocks:
+// per world, grid s_blocks * 4 bytes (2 bits/cell), proc_age and food_age
+// s_blocks * 16 u16 each; claims s_blocks * 8 bytes (4 bits/cell).
+bool __wator_alloc(Wator* wator, const i32 s_rows, const i32 s_cols) {
+  const u64 s_blocks = (u64)((s_rows + 3) / 4) * ((s_cols + 3) / 4);
 
-  w->s_rows = s_rows;
-  w->s_cols = s_cols;
+  const u64 s_mem =
+    2 * s_blocks * (4 * sizeof(u8) + 16 * sizeof(u16) + 16 * sizeof(u16)) + /* grid + proc_age + food_age memory*/
+    s_blocks * 8 * sizeof(u8);       /* claims memory */
 
-  w->grid.s_grid = s_blocks;
-  w->claims.s_grid = s_blocks;
+  wator->mem = (void*)calloc(1, s_mem);
+  if (wator->mem == NULL) {
+    wator->world[0] = (WatorWorld){ 0 };
+    wator->world[1] = (WatorWorld){ 0 };
+    wator->claims   = NULL;
+    return false;
+  }
 
-  w->grid.grid = calloc(s_grid ? s_grid : 1, sizeof(u8));
-  w->claims.claims = calloc((s_grid + 1) / 2 ? (s_grid + 1) / 2 : 1, sizeof(u8));
+  const u64 
+    proc_age_offset      = s_blocks * 4 * sizeof(u8),
+    food_age_offset      = s_blocks * (4 * sizeof(u8) + 16 * sizeof(u16)),
+    second_buffer_offset = s_blocks * (4 * sizeof(u8) + 16 * sizeof(u16) + 16 * sizeof(u16)),
+    claims_offset        = 2 * s_blocks * (4 * sizeof(u8) + 16 * sizeof(u16) + 16 * sizeof(u16));
 
-  w->proc_age = calloc(s_grid ? s_grid : 1, sizeof(u16));
-  w->food_age = calloc(s_grid ? s_grid : 1, sizeof(u16));
+  wator->s_rows = s_rows;
+  wator->s_cols = s_cols;
 
-  // The pull kernel still runs on its row-major Cell layout.
-  w->buf[0] = calloc(s_grid ? s_grid : 1, sizeof(Cell));
-  w->buf[1] = calloc(s_grid ? s_grid : 1, sizeof(Cell));
+  wator->world[0].grid     = &((u8*)wator->mem)[0];
+  wator->world[0].proc_age = (u16*)&((u8*)wator->mem)[proc_age_offset];
+  wator->world[0].food_age = (u16*)&((u8*)wator->mem)[food_age_offset];
 
-  return w->grid.grid != NULL && w->claims.claims != NULL
-      && w->proc_age != NULL && w->food_age != NULL
-      && w->buf[0] != NULL && w->buf[1] != NULL;
+  wator->world[1].grid     = &((u8*)wator->mem)[second_buffer_offset];
+  wator->world[1].proc_age = (u16*)&((u8*)wator->mem)[second_buffer_offset + proc_age_offset];
+  wator->world[1].food_age = (u16*)&((u8*)wator->mem)[second_buffer_offset + food_age_offset];
+  
+  wator->claims = &((u8*)wator->mem)[claims_offset];
+
+  return true;
 }
 
-void __world_free_bufs(World* w) {
-  free(w->buf[0]);
-  free(w->buf[1]);
-  w->buf[0] = w->buf[1] = NULL;
+// Frees the block behind every array and clears the pointers, so a second
+// call (load's fail path, then wator_destroy) is harmless.
+void __wator_free(Wator* wator) {
+  wator->world[0] = (WatorWorld){ 0 };
+  wator->world[1] = (WatorWorld){ 0 };
+  wator->claims = NULL;
 
-  free(w->proc_age);
-  free(w->food_age);
-  w->proc_age = w->food_age = NULL;
+  if (wator->mem != NULL)
+    free(wator->mem);
 
-  free(w->grid.grid);
-  free(w->claims.claims);
-  w->grid.grid = w->claims.claims = NULL;
+  wator->mem = NULL;
 }

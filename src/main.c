@@ -13,24 +13,24 @@ i32 main(const i32 argc, const char* argv[]) {
     return 1;
   }
 
-  World* w = wator_world_create();
+  Wator* w = wator_create();
   if (!w) {
     fprintf(stderr, "failed to allocate world\n");
     return 1;
   }
 
-  if (!wator_world_load(w, stdin)) {
+  if (!wator_load(w, stdin)) {
     fprintf(stderr, "failed to load world\n");
-    wator_world_destroy(w);
+    wator_destroy(w);
     return 1;
   }
 
   struct timespec t_start, t_end;
   clock_gettime(CLOCK_MONOTONIC, &t_start);
 
-  if (!wator_world_run(w, n_threads)) {
+  if (!wator_run(w, n_threads)) {
     fprintf(stderr, "failed to run simulation\n");
-    wator_world_destroy(w);
+    wator_destroy(w);
     return 1;
   }
 
@@ -40,8 +40,8 @@ i32 main(const i32 argc, const char* argv[]) {
     (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
   fprintf(stderr, "simulation time: %.3f ms\n", elapsed_ms);
 
-  wator_world_print(w, stdout);
-  wator_world_destroy(w);
+  wator_print(w, stdout);
+  wator_destroy(w);
 
   return 0;
 }

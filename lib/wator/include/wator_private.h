@@ -2,8 +2,8 @@
  * @file wator_private.h
  * @brief Wa-Tor internals: concrete structs and private prototypes
  *
- * Includes the public API, then defines the data layouts (cell, params,
- * world, process) and declares every internal function. Not part of the
+ * Includes the public API, then defines the data layouts (params, world,
+ * wator, process) and declares every internal function. Not part of the
  * public interface: only translation units of the library and its tests
  * include this header.
  */
@@ -17,16 +17,22 @@
 
 // ====================# DATA LAYOUT #====================
 
-// One grid cell type: 0..3. One byte per cell in the grid array;
-// the packed variant packs a 4x4 block into one u32 (2 bits/cell).
-typedef enum wator_cell_type {
+// One grid cell type: 0..3, 2 bits. The grid packs 4 cells per byte, so a
+// 4x4 block is 4 bytes (one byte per block row).
+enum wator_type {
   WATOR_EMPTY  = 0,
   WATOR_ROCK   = 1,
   WATOR_RABBIT = 2,
   WATOR_FOX    = 3,
-} CellType;
+};
 
-typedef struct params {
+typedef enum   wator_type    WatorType;
+
+typedef struct wator_params  WatorParams;
+typedef struct wator_world   WatorWorld;
+typedef struct wator_process WatorProcess;
+
+struct wator_params {
   i32
     s_gen_proc_rabbits,  // generations until a rabbit can procreate
     s_gen_proc_foxes,    // generations until a fox can procreate
@@ -34,73 +40,68 @@ typedef struct params {
     s_gen,               // generations to simulate
     s_threads,           // requested worker threads
     s_rebalance_every;   // generations between load-balancing barriers
-} Params;
+};
 
-// Pull-kernel layout: one packed Cell per cell of a row-major grid.
-// The bucket rewrite moves this into rules.c; kept here while both
-// kernels coexist.
-typedef struct cell {
+// One side of the double buffer: everything a sub-step reads (src) or
+// writes (dst). Sub-step s reads world[s & 1] and writes world[(s + 1) & 1].
+struct wator_world {
+  /*
+    4x4-block grid, stored block-major, s_blocks * 16 cells (edge blocks
+    padded), 2 bits per cell: s_blocks * 4 bytes. Cell (r, c) has the
+    cell index (see __wator_world_cell_index)
+      i = (r / 4 * s_blocks_row + c / 4) * 16 + (r % 4) * 4 + c % 4
+    and lives in grid byte i / 4 (= block * 4 + r % 4, one byte per block
+    row) at bit shift 2 * (i % 4) (= 2 * (c % 4)). Access through
+    __wator_world_grid_get / __wator_world_grid_set.
+  */
   u8
-    type,      // WATOR_*
-    proc_age;  // generations since last reproduction
+    * grid;      // WATOR_* per cell, 4 cells per byte
 
+  // Ages, block-major, one u16 per cell: indexed by the cell index i.
   u16
-    food_age;  // generations since last meal (foxes only)
-} Cell;
+    * proc_age,  // breeding age of the animal in the cell
+    * food_age;  // starvation age of the animal in the cell
+};
 
-#define CELL_EMPTY (Cell){ WATOR_EMPTY, 0, 0 }
-
-// Cell at row r, column c of a row-major grid of s_cols columns.
-static inline Cell* __wator_cell_at(Cell* g, const i32 s_cols, const i32 r, const i32 c) {
-  return &g[(i64) r * s_cols + c];
-}
-
-// 4x4-block grid: s_grid blocks, stored block-major. Block (br, bc) is
-// the contiguous run blocks[(br * s_blocks_row + bc) * 16]; inside it
-// the 4 rows are consecutive. Cell (r, c) lives at
-//   (r / 4 * s_blocks_row + c / 4) * 16 + (r % 4) * 4 + c % 4
-// u32 s_grid + u8* grid
-typedef struct world_grid {
-  u32
-    s_grid;  // 4x4 block count (u8* grid: one byte per cell)
-
-  u8* grid;  // WATOR_* per cell
-} WorldGrid;
-
-// Claim bits, block-major like WorldGrid: two cells per byte, one
-// nibble each; the nibble holds one bit per neighbour direction that
-// chose to move into the cell (and the eat bit for the fox sub-step).
-// u32 s_grid + u8* claims
-typedef struct world_grid_claims {
-  u32
-    s_grid;  // 4x4 block count
-
-  u8* claims;  // two cells per byte, one nibble each
-} WorldGridClaims;
-
-// struct world is opaque in wator.h; this is its concrete layout.
-// The ages are their own arrays: pass 1 scans cells without needing
-// them, and the pull kernel keeps its Cell layout inside rules.c.
-struct world {
-  WorldGrid       grid;   // cells, block-major
-  WorldGridClaims claims;  // claim bits, block-major
-
+// struct wator is opaque in wator.h; this is its concrete layout.
+struct wator {
   i32
-    s_rows,  // grid rows
-    s_cols;  // grid columns
+    s_rows,  // grid rows    (stored; <= s_cols)
+    s_cols;  // grid columns (stored)
 
-  u16
-    *proc_age,  // breeding age of the animal in the cell
-    *food_age;  // starvation age of the animal in the cell
+  // The input had rows > cols, so the grid is stored transposed: input
+  // cell (x, y) lives at stored (y, x), and the input's dimensions are
+  // (s_cols, s_rows). Load and print undo it; nothing else sees input
+  // coordinates.
+  // Why: in the block-major layout a block-row (4 rows x s_cols) is one
+  // contiguous run. Keeping rows <= cols makes those runs the long side:
+  // the inner loops over blocks are long sequential streams for the
+  // prefetcher, and the outer loop over block-rows is the short one, so
+  // there is less loop overhead and fewer jumps between block-rows. 
+  // The rules must still number neighbours clockwise from
+  // north *in input coordinates*: stored W, S, E, N.
+  bool transposed;
 
-  Cell* buf[2];  // pull-kernel double buffer, row-major
+  WatorParams params;
+  WatorWorld  world[2];  // double buffer, see struct wator_world
 
-  Params p;
+  /*
+    Claim bits, block-major like grid: two cells per byte, one nibble
+    each, s_blocks * 8 bytes. The nibble holds one bit per neighbour
+    direction that chose to move into the cell (and the eat bit for the
+    fox sub-step). Written in pass 1 and read in pass 2 of the same
+    sub-step, then cleared: not double-buffered. Cell (r, c) is in byte
+      (r / 4 * s_blocks_row + c / 4) * 8 + (r % 4) * 2 + (c % 4) / 2
+    at nibble shift 4 * (c % 2).
+  */
+  u8* claims;
+
+  void* mem;  // single allocation backing every array above; free this
 };
 
 // A worker thread: owns rows [row_begin, row_end) of the grid and is the
 // only thread that writes there. 1-D strips; add col_* fields for 2-D.
-typedef struct process {
+struct wator_process {
   i32
     id,
     row_begin,
@@ -108,73 +109,85 @@ typedef struct process {
 
   pthread_t thread;
 
-  struct world* world;
+  Wator* wator;  // shared by every worker
 
   // Sub-steps completed: 2 * gen + (0 = start, 1 = rabbits done).
-  // See __sync_wait for the window rule neighbours must respect.
+  // See __wator_process_sync_wait for the window rule neighbours must respect.
   _Atomic i32 progress;
 
-  struct process* up,
-                * down;  // neighbouring workers, NULL when none
-
-  // Animals (rabbits + foxes) per row; rows with 0 are skipped.
-  // Size = s_rows.
-  u8* animals_per_row;
-} Process;
+  struct wator_process
+    * up,
+    * down;  // neighbouring workers, NULL when none
+};
 
 // ====================# GRID (BLOCK-MAJOR) #====================
 
 // Blocks per block-row (s_cols rounded up to 4).
-static inline i32 __wator_s_blocks_row(const struct world* w) {
-  return (w->s_cols + 3) / 4;
+static inline i32 __wator_s_blocks_row(const Wator* wator) {
+  return (wator->s_cols + 3) / 4;
 }
 
-// Grid cell at (r, c) in a block-major WorldGrid.
-static inline u8* __wator_grid_at(const WorldGrid* g, const i32 s_blocks_row, const i32 r, const i32 c) {
-  const i64 i_block = (i64) (r >> 2) * s_blocks_row + (c >> 2);
-  return &g->grid[i_block * 16 + (r & 3) * 4 + (c & 3)];
+// Block-major cell index of (row, col): indexes the ages directly; the
+// grid (2 bits/cell) and the claims (4 bits/cell) derive their byte from it.
+static inline i64 __wator_world_cell_index(const i32 s_blocks_row, const i32 row, const i32 col) {
+  const i64
+    block_index = (i64)(row >> 2) * s_blocks_row + (col >> 2),
+    block_coord = (row & 3) * 4 + (col & 3);
+  return block_index * 16 + block_coord;
+}
+
+// WATOR_* type of the cell with cell index i.
+static inline u8 __wator_world_grid_get(const u8* grid, const i64 i) {
+  return (grid[i >> 2] >> ((i & 3) * 2)) & 3;
+}
+
+// Sets the type of the cell with cell index i. A plain read-modify-write of
+// the byte: the byte's 4 cells are one block row, so with block-row-aligned
+// zones only the owning worker ever writes it.
+static inline void __wator_world_grid_set(u8* grid, const i64 i, const u8 type) {
+  const u8 shift = (u8)((i & 3) * 2);
+  grid[i >> 2] = (u8)((grid[i >> 2] & ~(3u << shift)) | ((u32)type << shift));
 }
 
 // ====================# WORLD #====================
 
-// Allocates the grids and ages for an s_rows x s_cols world (grid and
-// claims block-major, zeroed; ages zeroed; pull-kernel bufs too).
-bool __world_alloc_bufs    (World* w, const i32 s_rows, const i32 s_cols);
-void __world_free_bufs     (World* w);
+// Allocates, in one block, both worlds' grids and ages and the claims for
+// an s_rows x s_cols world, all zeroed (block-major, edge blocks padded).
+bool __wator_alloc       (Wator* wator, const i32 s_rows, const i32 s_cols);
+void __wator_free        (Wator* wator);
 
 // ====================# PROCESS #====================
 
 // Runs the whole simulation: sequentially on the calling thread when
 // s_threads <= 1, otherwise on s_threads pthreads. False on failure.
-bool __process_run             (World* w, const i32 s_threads);
-// Sets up s_threads workers over w: links neighbours, allocates
-// animals_per_row and fills it from the loaded grid.
-bool __process_init_all        (Process* procs, World* w, const i32 s_threads);
-void __process_destroy_all     (Process* procs, const i32 s_threads);
+bool __wator_process_run             (Wator* wator, const i32 s_threads);
+// Sets up s_threads workers over wator: links neighbours, assigns zones.
+bool __wator_process_init_all        (WatorProcess* procs, Wator* wator, const i32 s_threads);
+void __wator_process_destroy_all     (WatorProcess* procs, const i32 s_threads);
 // (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
-void __process_assign_zones    (Process* procs, const i32 s_rows, const i32 s_threads);
+void __wator_process_assign_zones    (WatorProcess* procs, const i32 s_rows, const i32 s_threads);
 
 // ====================# RULES #====================
 
 // One sub-step of the given species: reads src, writes dst, touching only
 // the zone owned by p (reads may reach the neighbours' boundary rows).
 // `gen` is the generation G used by the (G + X + Y) mod P selection rule.
-void __rules_rabbit_substep    (Process* p, const i32 gen, const Cell* src, Cell* dst);
-void __rules_fox_substep       (Process* p, const i32 gen, const Cell* src, Cell* dst);
+void __wator_process_rabbit_substep    (WatorProcess* p, const i32 gen, const WatorWorld* src, WatorWorld* dst);
+void __wator_process_fox_substep       (WatorProcess* p, const i32 gen, const WatorWorld* src, WatorWorld* dst);
 
 // ====================# SYNC #====================
 
 // Blocks until it is safe for p to run sub-step number `substep`
-// (0-based; sub-step s reads buf[s & 1] and writes buf[(s + 1) & 1]).
-void __sync_wait               (const Process* p, const i32 substep);
+// (0-based; sub-step s reads world[s & 1] and writes world[(s + 1) & 1]).
+void __wator_process_sync_wait               (const WatorProcess* p, const i32 substep);
 // Marks `substep` sub-steps as done for p.
-void __sync_publish            (Process* p, const i32 substep);
+void __wator_process_sync_publish            (WatorProcess* p, const i32 substep);
 
 // ====================# BALANCE #====================
 
-// Total animals in p's zone, from animals_per_row.
-i64  __balance_count_animals   (const Process* p);
+// Total animals in p's zone.
+i64  __wator_process_count_animals   (const WatorProcess* p);
 // Barrier hook: rebalance zones when the load is badly skewed.
-void __balance_rebalance       (Process* procs, const i32 s_threads);
+void __wator_process_rebalance       (WatorProcess* procs, const i32 s_threads);
 
 #endif // !__WATOR_PRIVATE_H__
