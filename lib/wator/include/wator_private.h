@@ -15,7 +15,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-// ====================# DATA LAYOUT #====================
+/* ====================# DATA LAYOUT #==================== */
 
 // One grid cell type: 0..3, 2 bits. The grid packs 4 cells per byte, so a
 // 4x4 block is 4 bytes (one byte per block row).
@@ -69,17 +69,19 @@ struct wator {
     s_rows,  // grid rows    (stored; <= s_cols)
     s_cols;  // grid columns (stored)
 
-  // The input had rows > cols, so the grid is stored transposed: input
-  // cell (x, y) lives at stored (y, x), and the input's dimensions are
-  // (s_cols, s_rows). Load and print undo it; nothing else sees input
-  // coordinates.
-  // Why: in the block-major layout a block-row (4 rows x s_cols) is one
-  // contiguous run. Keeping rows <= cols makes those runs the long side:
-  // the inner loops over blocks are long sequential streams for the
-  // prefetcher, and the outer loop over block-rows is the short one, so
-  // there is less loop overhead and fewer jumps between block-rows. 
-  // The rules must still number neighbours clockwise from
-  // north *in input coordinates*: stored W, S, E, N.
+  /*
+    The input had rows > cols, so the grid is stored transposed: input
+    cell (x, y) lives at stored (y, x), and the input's dimensions are
+    (s_cols, s_rows). Load and print undo it; nothing else sees input
+    coordinates.
+    Why: in the block-major layout a block-row (4 rows x s_cols) is one
+    contiguous run. Keeping rows <= cols makes those runs the long side:
+    the inner loops over blocks are long sequential streams for the
+    prefetcher, and the outer loop over block-rows is the short one, so
+    there is less loop overhead and fewer jumps between block-rows.
+    The rules must still number neighbours clockwise from
+    north *in input coordinates*: stored W, S, E, N.
+  */
   bool transposed;
 
   WatorParams params;
@@ -97,6 +99,13 @@ struct wator {
   u8* claims;
 
   void* mem;  // single allocation backing every array above; free this
+
+  /*
+    TODO(refactor): add the two trees (quadtree.h), one leaf per 4x4 block:
+      QuadTree* occupancy;    // mask tree: leaf = type mask, internal = animals
+      QuadTree* claims_tree;  // count tree: claimed cells per block
+    QuadTree (lib/quadtree) is not implemented yet.
+  */
 };
 
 // A worker thread: owns rows [row_begin, row_end) of the grid and is the
@@ -120,7 +129,7 @@ struct wator_process {
     * down;  // neighbouring workers, NULL when none
 };
 
-// ====================# GRID (BLOCK-MAJOR) #====================
+/* ====================# GRID (BLOCK-MAJOR) #==================== */
 
 // Blocks per block-row (s_cols rounded up to 4).
 static inline i32 __wator_s_blocks_row(const Wator* wator) {
@@ -141,22 +150,24 @@ static inline u8 __wator_world_grid_get(const u8* grid, const i64 i) {
   return (grid[i >> 2] >> ((i & 3) * 2)) & 3;
 }
 
-// Sets the type of the cell with cell index i. A plain read-modify-write of
-// the byte: the byte's 4 cells are one block row, so with block-row-aligned
-// zones only the owning worker ever writes it.
+/*
+  Sets the type of the cell with cell index i. A plain read-modify-write of
+  the byte: the byte's 4 cells are one block row, so with block-row-aligned
+  zones only the owning worker ever writes it.
+*/
 static inline void __wator_world_grid_set(u8* grid, const i64 i, const u8 type) {
   const u8 shift = (u8)((i & 3) * 2);
   grid[i >> 2] = (u8)((grid[i >> 2] & ~(3u << shift)) | ((u32)type << shift));
 }
 
-// ====================# WORLD #====================
+/* ====================# WORLD #==================== */
 
 // Allocates, in one block, both worlds' grids and ages and the claims for
 // an s_rows x s_cols world, all zeroed (block-major, edge blocks padded).
 bool __wator_alloc       (Wator* wator, const i32 s_rows, const i32 s_cols);
 void __wator_free        (Wator* wator);
 
-// ====================# PROCESS #====================
+/* ====================# PROCESS #==================== */
 
 // Runs the whole simulation: sequentially on the calling thread when
 // s_threads <= 1, otherwise on s_threads pthreads. False on failure.
@@ -167,15 +178,17 @@ void __wator_process_destroy_all     (WatorProcess* procs, const i32 s_threads);
 // (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
 void __wator_process_assign_zones    (WatorProcess* procs, const i32 s_rows, const i32 s_threads);
 
-// ====================# RULES #====================
+/* ====================# RULES #==================== */
 
-// One sub-step of the given species: reads src, writes dst, touching only
-// the zone owned by p (reads may reach the neighbours' boundary rows).
-// `gen` is the generation G used by the (G + X + Y) mod P selection rule.
+/*
+  One sub-step of the given species: reads src, writes dst, touching only
+  the zone owned by p (reads may reach the neighbours' boundary rows).
+  `gen` is the generation G used by the (G + X + Y) mod P selection rule.
+*/
 void __wator_process_rabbit_substep    (WatorProcess* p, const i32 gen, const WatorWorld* src, WatorWorld* dst);
 void __wator_process_fox_substep       (WatorProcess* p, const i32 gen, const WatorWorld* src, WatorWorld* dst);
 
-// ====================# SYNC #====================
+/* ====================# SYNC #==================== */
 
 // Blocks until it is safe for p to run sub-step number `substep`
 // (0-based; sub-step s reads world[s & 1] and writes world[(s + 1) & 1]).
@@ -183,7 +196,7 @@ void __wator_process_sync_wait               (const WatorProcess* p, const i32 s
 // Marks `substep` sub-steps as done for p.
 void __wator_process_sync_publish            (WatorProcess* p, const i32 substep);
 
-// ====================# BALANCE #====================
+/* ====================# BALANCE #==================== */
 
 // Total animals in p's zone.
 i64  __wator_process_count_animals   (const WatorProcess* p);

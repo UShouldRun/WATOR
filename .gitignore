@@ -1,4 +1,5 @@
 lib/wator/build/
+lib/quadtree/build/
 test/wator/twator
 ecosystem
 compile_commands.json

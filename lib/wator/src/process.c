@@ -1,12 +1,14 @@
-// TODO(refactor): port to the new interface: Process -> WatorProcess,
-// World -> Wator, w->p -> params, buf/Cell -> world[2]/WatorWorld; drop
-// animals_per_row; run the two-pass sub-step; block-row-aligned zones.
+/*
+  TODO(refactor): port to the new interface: Process -> WatorProcess,
+  World -> Wator, w->p -> params, buf/Cell -> world[2]/WatorWorld; drop
+  animals_per_row; run the two-pass sub-step; block-row-aligned zones.
+*/
 
 #include "wator_private.h"
 
 #include <stdlib.h>
 
-// ====================# PRIVATE #====================
+/* ====================# PRIVATE #==================== */
 
 // Thread body: runs every sub-step of the simulation.
 static void* __wator_process_worker_main(void* arg) {
@@ -18,11 +20,14 @@ static void* __wator_process_worker_main(void* arg) {
   for (i32 s = 0; s < s_total; s++) {
     __wator_process_sync_wait(p, s);
 
-    // TODO(refactor): src/dst are &w->world[s & 1] / &w->world[(s + 1) & 1]
-    // (WatorWorld*), and the sub-step becomes the two passes: pass 1,
-    // publish the pass-1 progress, wait the neighbours' pass 1, pass 2,
-    // publish the sub-step (see report, "Synchronisation"). Clear the claims
-    // and the claims tree before pass 1.
+    /*
+      TODO(refactor): src/dst are &w->world[s & 1] / &w->world[(s + 1) & 1]
+      (WatorWorld*), and the sub-step becomes the two passes: pass 1,
+      publish the pass-1 progress, wait the neighbours' pass 1, pass 2,
+      publish the sub-step (see report, "Synchronisation"). Clear the claims
+      and the claims tree before pass 1 (quadtree_clear; QuadTree is not
+      implemented yet).
+    */
     Cell* src = w->buf[s & 1];
     Cell* dst = w->buf[(s + 1) & 1];
 
@@ -39,17 +44,19 @@ static void* __wator_process_worker_main(void* arg) {
   return NULL;
 }
 
-// (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
-//
-// TODO: align strip boundaries to block-rows (multiples of 4 rows).
-// The grid is block-major: a boundary in the middle of a 4x4 block puts two
-// workers on the same 16-byte block (false sharing on grid and claims) and
-// on the same quad-tree leaf (its counts would then need atomics).
-// With aligned strips the worker cap is ceil(s_rows / 4) instead of
-// s_rows / 2 (see wator_run); 200x200 still allows 50 workers.
-// s_rows is the shorter side (inputs with rows > cols are stored
-// transposed), so the cap is set by min(R, C), as it already was for
-// wide inputs before the transposition.
+/*
+  (Re)assigns contiguous row strips; also the hook for 2-D blocks later.
+
+  TODO: align strip boundaries to block-rows (multiples of 4 rows).
+  The grid is block-major: a boundary in the middle of a 4x4 block puts two
+  workers on the same 16-byte block (false sharing on grid and claims) and
+  on the same quad-tree leaf (its counts would then need atomics).
+  With aligned strips the worker cap is ceil(s_rows / 4) instead of
+  s_rows / 2 (see wator_run); 200x200 still allows 50 workers.
+  s_rows is the shorter side (inputs with rows > cols are stored
+  transposed), so the cap is set by min(R, C), as it already was for
+  wide inputs before the transposition.
+*/
 void __wator_process_assign_zones(Process* procs, const i32 s_rows, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++) {
     procs[i].row_begin = (i32) ((i64) s_rows * i / s_threads);
@@ -57,12 +64,16 @@ void __wator_process_assign_zones(Process* procs, const i32 s_rows, const i32 s_
   }
 }
 
-// Sets up s_threads workers over w: links neighbours, allocates
-// animals_per_row and fills it from the loaded grid.
-// TODO(refactor): procs[i].world -> procs[i].wator; drop animals_per_row
-// (alloc, free and the initial count below): the occupancy tree replaces
-// it and is built once from world[0].grid after load (or in alloc/load).
-// The cell read must use __wator_world_grid_get, not __wator_cell_at / buf[0].
+/*
+  Sets up s_threads workers over w: links neighbours, allocates
+  animals_per_row and fills it from the loaded grid.
+
+  TODO(refactor): procs[i].world -> procs[i].wator; drop animals_per_row
+  (alloc, free and the initial count below): the occupancy tree replaces
+  it and is built once from world[0].grid after load (or in alloc/load).
+  QuadTree (lib/quadtree) is not implemented yet.
+  The cell read must use __wator_world_grid_get, not __wator_cell_at / buf[0].
+*/
 bool __wator_process_init_all(Process* procs, World* w, const i32 s_threads) {
   for (i32 i = 0; i < s_threads; i++) {
     procs[i].id    = i;
@@ -140,10 +151,12 @@ bool __wator_process_run(World* w, const i32 s_threads) {
       n_created = i + 1;
     }
 
-    // If a create failed, the workers that did start are left running: they
-    // are in sync with each other and will finish the simulation on their
-    // own. We report the failure without waiting for them (their results
-    // are not trusted), so we join nothing on the failure path.
+    /*
+      If a create failed, the workers that did start are left running: they
+      are in sync with each other and will finish the simulation on their
+      own. We report the failure without waiting for them (their results
+      are not trusted), so we join nothing on the failure path.
+    */
     if (ok)
       for (i32 i = 0; i < n_created; i++)
         pthread_join(procs[i].thread, NULL);

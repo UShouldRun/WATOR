@@ -6,21 +6,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-// TODO(refactor): the tests still use the old layout and must be ported:
-//  - World -> Wator, w->p -> params, __world_alloc_bufs -> __wator_alloc.
-//  - cell reads __wator_cell_at(w->buf[0], ...)->type become
-//    __wator_world_grid_get(w->world[0].grid, __wator_world_cell_index(...)), and
-//    ages world[0].proc_age / food_age at the same block-major index.
-//  - the random-world oracle test compares memcmp on Cell buffers and checks
-//    animals_per_row: keep the pull kernel's reference step (row-major Cell
-//    is fine inside the test), convert to/from the block-major world for the
-//    comparison, and check the occupancy tree instead of animals_per_row.
-//  - __rules_*_substep now take WatorWorld* src / dst.
-//  - add cases: rows > cols input (transposed load/print round-trip and the
-//    same result as the untransposed run), and R, C not multiples of 4.
+/*
+  TODO(refactor): the tests still use the old layout and must be ported:
+   - World -> Wator, w->p -> params, __world_alloc_bufs -> __wator_alloc.
+   - cell reads __wator_cell_at(w->buf[0], ...)->type become
+     __wator_world_grid_get(w->world[0].grid, __wator_world_cell_index(...)), and
+     ages world[0].proc_age / food_age at the same block-major index.
+   - the random-world oracle test compares memcmp on Cell buffers and checks
+     animals_per_row: keep the pull kernel's reference step (row-major Cell
+     is fine inside the test), convert to/from the block-major world for the
+     comparison, and check the occupancy tree instead of animals_per_row
+     (QuadTree, lib/quadtree, is not implemented yet: it needs its own tests).
+   - __rules_*_substep now take WatorWorld* src / dst.
+   - add cases: rows > cols input (transposed load/print round-trip and the
+     same result as the untransposed run), and R, C not multiples of 4.
+*/
 #include "wator_private.h"
 
-// ====================# WORLD #====================
+/* ====================# WORLD #==================== */
 
 static const char* EXAMPLE =
     "2 4 3 6 5 5 9\n"
@@ -78,7 +81,7 @@ static char* __test_print_to_str(const World* w) {
   return buf;
 }
 
-// ====================# TESTS #====================
+/* ====================# TESTS #==================== */
 
 static void test_world_roundtrip(void) {
   printf("world: round-trip load + print\n");
@@ -262,16 +265,20 @@ static void test_rabbit_zones_match_reference(void) {
   }
 }
 
-// Regression: when two rabbits move to the same cell, the winner is the one
-// with the older age *after* the move. A rabbit that is procreating resets to
-// 0, so it loses to a younger rabbit that is not procreating.
+/*
+  Regression: when two rabbits move to the same cell, the winner is the one
+  with the older age *after* the move. A rabbit that is procreating resets to
+  0, so it loses to a younger rabbit that is not procreating.
+*/
 static void test_rabbit_conflict_post_move_age(void) {
   printf("simulation: procreating rabbit competes with its post-move age\n");
 
-  // 2x3 world:
-  //   A . B        A = rabbit age 1 (procreating), B = rabbit age 0.
-  //   * . *        Rocks block every other neighbour, so both A and B can
-  //                only move to the centre cell (0, 1).
+  /*
+    2x3 world:
+      A . B        A = rabbit age 1 (procreating), B = rabbit age 0.
+      * . *        Rocks block every other neighbour, so both A and B can
+                   only move to the centre cell (0, 1).
+  */
   World* w = wator_create();
   assert(w);
   assert(__test_load_str(w,
@@ -296,7 +303,7 @@ static void test_rabbit_conflict_post_move_age(void) {
   assert(wator_destroy(w));
 }
 
-// ====================# MAIN #====================
+/* ====================# MAIN #==================== */
 
 int main(void) {
   test_world_roundtrip();

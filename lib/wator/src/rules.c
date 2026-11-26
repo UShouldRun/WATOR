@@ -1,29 +1,35 @@
-// TODO(refactor): replace the pull kernel with the bucket kernel (two passes
-// over the quad trees and the claims); details below the include.
+/*
+  TODO(refactor): replace the pull kernel with the bucket kernel (two passes
+  over the quad trees and the claims); details below the include.
+  QuadTree (lib/quadtree) is not implemented yet: the passes depend on it.
+*/
 
 #include "wator_private.h"
 
-// TODO(refactor): this file is still the pull kernel on the row-major Cell
-// layout, which no longer exists (Cell, CELL_EMPTY, World, w->p, buf).
-// Replace it with the bucket kernel of the report:
-//  - pass 1 (choose): walk the occupancy tree over the zone, compute each
-//    animal's direction from src (grid via __wator_world_grid_get, ages from
-//    src->proc_age / food_age at the same index), fetch_or the claim nibble
-//    in wator->claims, fetch_add the claims tree on the cell's first claim.
-//  - pass 2 (solve): walk the claims tree, resolve each claimed cell
-//    (oldest-after-the-move, ties to the least hungry fox), write dst grid
-//    and ages, apply departures / procreation, update the occupancy tree.
-//  - cells that nothing touched must still be carried to dst (rocks, the
-//    other species, animals that stay): copy src -> dst for the zone, or
-//    write every stayer explicitly in pass 1/2.
-//  - transposition: when wator->transposed, number neighbours in input
-//    clockwise order = stored W, S, E, N (drow/dcol below are N, E, S, W).
-//  - ages are u16 now: __rules_age_inc saturates at 255 (u8), widen it.
-// Keep the pull kernel's logic available to the tests as the oracle.
+/*
+  TODO(refactor): this file is still the pull kernel on the row-major Cell
+  layout, which no longer exists (Cell, CELL_EMPTY, World, w->p, buf).
+  Replace it with the bucket kernel of the report, once QuadTree
+  (lib/quadtree) is implemented -- it is not yet; its API is quadtree.h:
+   - pass 1 (choose): walk the occupancy tree over the zone, compute each
+     animal's direction from src (grid via __wator_world_grid_get, ages from
+     src->proc_age / food_age at the same index), fetch_or the claim nibble
+     in wator->claims, fetch_add the claims tree on the cell's first claim.
+   - pass 2 (solve): walk the claims tree, resolve each claimed cell
+     (oldest-after-the-move, ties to the least hungry fox), write dst grid
+     and ages, apply departures / procreation, update the occupancy tree.
+   - cells that nothing touched must still be carried to dst (rocks, the
+     other species, animals that stay): copy src -> dst for the zone, or
+     write every stayer explicitly in pass 1/2.
+   - transposition: when wator->transposed, number neighbours in input
+     clockwise order = stored W, S, E, N (drow/dcol below are N, E, S, W).
+   - ages are u16 now: __rules_age_inc saturates at 255 (u8), widen it.
+  Keep the pull kernel's logic available to the tests as the oracle.
+*/
 
 #include <string.h>
 
-// ====================# PRIVATE #====================
+/* ====================# PRIVATE #==================== */
 
 // Clockwise from north: N, E, S, W.
 static const i32 drow[4] = {-1, 0, 1, 0};
@@ -47,12 +53,14 @@ static inline u8 __rules_age_inc(const u8 age) {
   return age < 255 ? age + 1 : 255;
 }
 
-// Where does the animal of species `species` (WATOR_RABBIT or WATOR_FOX) at
-// (row, col) go in generation `gen`? Returns 0..3 (index into drow/dcol),
-// DIR_STAY when it has nowhere to go, or DIR_DIE for a fox that starves.
-//   rabbit: moves to an empty neighbour
-//   fox:    moves to a rabbit neighbour if any; else starves if too hungry;
-//           else moves to an empty neighbour
+/*
+  Where does the animal of species `species` (WATOR_RABBIT or WATOR_FOX) at
+  (row, col) go in generation `gen`? Returns 0..3 (index into drow/dcol),
+  DIR_STAY when it has nowhere to go, or DIR_DIE for a fox that starves.
+    rabbit: moves to an empty neighbour
+    fox:    moves to a rabbit neighbour if any; else starves if too hungry;
+            else moves to an empty neighbour
+*/
 static i32 __rules_animal_dir(const World *w, const Cell *src, const i32 row,
                               const i32 col, const i32 gen, const u8 species) {
   i32 rabbit[4], empty[4], n_rabbit = 0, n_empty = 0;
@@ -86,9 +94,11 @@ static i32 __rules_animal_dir(const World *w, const Cell *src, const i32 row,
   return P > 0 ? pool[(gen + row + col) % P] : DIR_STAY;
 }
 
-// New content of cell (row, col) after the sub-step of species `species`. A
-// cell looks at who could end up in it, using only src, so every worker can
-// write only its own zone.
+/*
+  New content of cell (row, col) after the sub-step of species `species`. A
+  cell looks at who could end up in it, using only src, so every worker can
+  write only its own zone.
+*/
 static Cell __rules_cell_update(const World *w, const Cell *src, const i32 row,
                                 const i32 col, const i32 gen,
                                 const u8 species) {
@@ -117,10 +127,12 @@ static Cell __rules_cell_update(const World *w, const Cell *src, const i32 row,
     return CELL_EMPTY;
   }
 
-  // The cell can receive this species: it is empty, or (for foxes) holds a
-  // rabbit to eat. Neighbours of this species that chose to move here
-  // compete for the cell: the oldest procreation age after the move wins,
-  // ties go to the least hungry fox.
+  /*
+    The cell can receive this species: it is empty, or (for foxes) holds a
+    rabbit to eat. Neighbours of this species that chose to move here
+    compete for the cell: the oldest procreation age after the move wins,
+    ties go to the least hungry fox.
+  */
   if (cur.type == WATOR_EMPTY ||
       (species == WATOR_FOX && cur.type == WATOR_RABBIT)) {
     i32 best_age = -1, best_food = 0;
@@ -146,9 +158,11 @@ static Cell __rules_cell_update(const World *w, const Cell *src, const i32 row,
                      ? (cur.type == WATOR_RABBIT ? 0 : q.food_age + 1)
                      : 0;
 
-      // Compare the age the animal will have *after* moving. An animal that
-      // is procreating resets to 0, so it competes as a newborn: the one it
-      // leaves behind and the one that arrives are both age 0.
+      /*
+        Compare the age the animal will have *after* moving. An animal that
+        is procreating resets to 0, so it competes as a newborn: the one it
+        leaves behind and the one that arrives are both age 0.
+      */
       i32 age = q.proc_age >= PG ? 0 : __rules_age_inc(q.proc_age);
       if (age > best_age || (age == best_age && food < best_food)) {
         best_age = age;
@@ -167,14 +181,16 @@ static Cell __rules_cell_update(const World *w, const Cell *src, const i32 row,
   return cur; // rocks, and the other species: untouched
 }
 
-// Sub-step of species `species` for generation `gen`: reads src, writes only
-// the rows [row_begin, row_end) of dst. Reads reach up to 2 rows into the
-// neighbouring zones (a neighbour animal's choice depends on its own
-// neighbours), so every zone needs at least 2 rows.
-//
-// animals_per_row[r] is kept equal to the number of animals in row r of the
-// result (saturating at 255); a row is copied as-is when rows r - 1, r and
-// r + 1 of src (all inside the zone) had no animals.
+/*
+  Sub-step of species `species` for generation `gen`: reads src, writes only
+  the rows [row_begin, row_end) of dst. Reads reach up to 2 rows into the
+  neighbouring zones (a neighbour animal's choice depends on its own
+  neighbours), so every zone needs at least 2 rows.
+
+  animals_per_row[r] is kept equal to the number of animals in row r of the
+  result (saturating at 255); a row is copied as-is when rows r - 1, r and
+  r + 1 of src (all inside the zone) had no animals.
+*/
 static void __rules_substep(
   Process*    p, 
   const i32   gen, const u8 species,

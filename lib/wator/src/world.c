@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ====================# PUBLIC #====================
+/* ====================# PUBLIC #==================== */
 
 /**
  * @brief Creates a world without buffers: s_rows = s_cols = 0, zeroed params.
@@ -155,12 +155,14 @@ fail:
   return false;
 }
 
-// ====================# PRIVATE #====================
+/* ====================# PRIVATE #==================== */
 
-// Allocates both worlds and the claims for an s_rows x s_cols world in one
-// zeroed block (wator->mem), all block-major with padded edge blocks:
-// per world, grid s_blocks * 4 bytes (2 bits/cell), proc_age and food_age
-// s_blocks * 16 u16 each; claims s_blocks * 8 bytes (4 bits/cell).
+/*
+  Allocates both worlds and the claims for an s_rows x s_cols world in one
+  zeroed block (wator->mem), all block-major with padded edge blocks:
+  per world, grid s_blocks * 4 bytes (2 bits/cell), proc_age and food_age
+  s_blocks * 16 u16 each; claims s_blocks * 8 bytes (4 bits/cell).
+*/
 bool __wator_alloc(Wator* wator, const i32 s_rows, const i32 s_cols) {
   const u64 s_blocks = (u64)((s_rows + 3) / 4) * ((s_cols + 3) / 4);
 

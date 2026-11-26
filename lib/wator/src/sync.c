@@ -7,18 +7,24 @@
 
 #include <sched.h>
 
-// Window rule: to run sub-step s, each neighbour must have completed at
-// least s sub-steps (so the cells I read are final). The neighbour applies
-// the same rule to me, so it cannot overwrite what I am reading before I
-// finish. Net effect: neighbours differ by at most one sub-step, and zones
-// k apart can drift up to k sub-steps apart.
-// TODO(refactor): Process -> WatorProcess. The two-pass sub-step needs a
-// second counter (progress_pass1 in the report) or a progress that counts
-// passes (2 per sub-step); add the field to struct wator_process and a
-// wait/publish pair for it. With the two passes the read window is one row,
-// so the "at least two rows per zone" rule relaxes (see the zone TODO in
-// process.c: block-row alignment is the stronger constraint anyway).
-// ====================# PUBLIC #====================
+/*
+  Window rule: to run sub-step s, each neighbour must have completed at
+  least s sub-steps (so the cells I read are final). The neighbour applies
+  the same rule to me, so it cannot overwrite what I am reading before I
+  finish. Net effect: neighbours differ by at most one sub-step, and zones
+  k apart can drift up to k sub-steps apart.
+*/
+
+/*
+  TODO(refactor): Process -> WatorProcess. The two-pass sub-step needs a
+  second counter (progress_pass1 in the report) or a progress that counts
+  passes (2 per sub-step); add the field to struct wator_process and a
+  wait/publish pair for it. With the two passes the read window is one row,
+  so the "at least two rows per zone" rule relaxes (see the zone TODO in
+  process.c: block-row alignment is the stronger constraint anyway).
+*/
+
+/* ====================# PUBLIC #==================== */
 
 void __wator_process_sync_wait(const Process* p, const i32 substep) {
   const Process* nb[2] = { p->up, p->down };
